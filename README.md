@@ -177,7 +177,14 @@ Debug mode is enabled by default. To disable, remove `-DDEBUG` from the CFLAGS i
 
 ## License
 
-See project license file for details.
+```
+SPDX-License-Identifier: Apache-2.0
+
+Copyright 2026 Nick Kossifidis <mick@ics.forth.gr>
+Copyright 2026 ICS/FORTH
+```
+
+Individual files may have different copyright years reflecting their actual development history.
 
 ## Contributing
 
