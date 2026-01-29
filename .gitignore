@@ -1,0 +1,14 @@
+# Build output
+build/*
+
+# TFTP root
+tftp-root/*
+
+# Image tools test binaries
+image_tools/test_parser
+
+# Hidden and temporary files
+.*
+!.gitignore
+*~
+*.tmp
