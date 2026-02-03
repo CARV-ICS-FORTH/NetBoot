@@ -60,10 +60,6 @@ imgp_get_unit_handler(uint32_t unit_id)
 {
 	struct uid_cb_map *entry = __start_rodata_uid_cbs;
 	struct uid_cb_map *end = __stop_rodata_uid_cbs;
-	size_t count = end - entry;
-
-	DBG("imgp_get_unit_handler: looking for uid=%u, section has %zu entries\n",
-	    unit_id, count);
 
 	while (entry < end) {
 		if (entry->uid == unit_id)
@@ -186,9 +182,11 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 
 	ImgpState* imgp = (ImgpState*)out_ctx;
 
-	/* NULL in_buff is valid - it means "return current byte count" */
-	if (!in_buff)
+	/* Check if caller indicates we reached the end of input/transmission. */
+	if (!in_buff || !in_buff_len) {
+		DBG("[IMGP] end of input reached, state: %i\n", imgp->state);
 		return imgp->total_bytes_out;
+	}
 
 	/* Process input in 8-byte chunks */
 	while (imgp->state != IMGP_STATE_DONE) {
@@ -212,7 +210,7 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 
 			/* Validate magic number */
 			if (imgp->global_hdr.magic != IMG_MAGIC_NB) {
-				ERR("Bad magic: expected 0x%04X, got 0x%04X\n",
+				ERR("[IMGP] Bad magic: expected 0x%04X, got 0x%04X\n",
 				    IMG_MAGIC_NB, imgp->global_hdr.magic);
 				return -EBADMSG;
 			}
@@ -263,9 +261,8 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 			/* Check if done */
 			if (imgp->last_sep_hdr.next_part_size == 0) {
 				/* Verify partition count */
-				if (imgp->part_count != imgp->global_hdr.part_count)
+				if (imgp->part_count != (uint8_t)imgp->global_hdr.part_count)
 					return -EPROTO;
-				DBG("Image parser done\n");
 				imgp->state = IMGP_STATE_DONE;
 				break;
 			}
@@ -292,7 +289,7 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 			/* Get unit handler */
 			imgp->cur_handler = imgp_get_unit_handler(imgp->cur_part_hdr.unit_id);
 			if (!imgp->cur_handler) {
-				ERR("No handler for unit_id=%u\n", imgp->cur_part_hdr.unit_id);
+				ERR("[IMGP] No handler for unit_id=%u\n", imgp->cur_part_hdr.unit_id);
 				return -EINVAL;
 			}
 

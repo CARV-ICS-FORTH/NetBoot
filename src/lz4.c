@@ -10,11 +10,11 @@
 #include <string.h>	/* For memcpy */
 #include <errno.h>	/* For error codes */
 
-ssize_t
+ssize_t __attribute__((noipa))
 lz4_process_chunk(struct lz4_ctx *ctx, const uint8_t *src, size_t len)
 {
 	const uint8_t *src_end = src + len;
-	size_t total_written_on_entry = ctx->total_written;
+	const size_t total_written_on_entry = ctx->total_written;
 
 	while (src < src_end) {
 
@@ -46,9 +46,9 @@ lz4_process_chunk(struct lz4_ctx *ctx, const uint8_t *src, size_t len)
 		}
 		case LZ4_PHASE_LITS: {
 			if (ctx->count > 0) {
-				uint32_t avail = (uint32_t)(src_end - src);
-				uint32_t to_copy = (ctx->count < avail) ? 
-						   ctx->count : avail;
+				const size_t avail = (src_end - src);
+				const size_t to_copy = (ctx->count < avail) ?
+							ctx->count : avail;
 
 				/* Prevent DRAM buffer overflow */
 				if (ctx->total_written + to_copy > ctx->max_output)
@@ -74,14 +74,14 @@ lz4_process_chunk(struct lz4_ctx *ctx, const uint8_t *src, size_t len)
 			break;
 		}
 		case LZ4_PHASE_OFF_HI: {
-			uint16_t dist = ((uint16_t)(*src++) << 8) | ctx->off_lo;
+			const uint16_t dist = ((uint16_t)(*src++) << 8) | ctx->off_lo;
 
 			/* Security: Check for invalid offset or OOB read */
 			if (dist == 0 || dist > ctx->total_written)
 				return -EOVERFLOW;
 
 			ctx->match_dist = dist;
-			ctx->count = (uint32_t)ctx->match_len_low;
+			ctx->count = (size_t)ctx->match_len_low;
 
 			/* If match_len is 15, length is extended by next bytes */
 			if (ctx->count == 15) {

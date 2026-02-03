@@ -25,12 +25,12 @@ typedef enum {
 struct lz4_ctx {
 	lz4_phase_t phase;
 	uint8_t *dest_ptr;	/* Current write cursor in DRAM */
-	uint32_t count;		/* Count for literals or matches */
+	size_t count;		/* Count for literals or matches */
 	uint16_t match_dist;	/* The 'look-back' distance */
 	uint8_t  match_len_low;	/* Stores 4-bit match length from token */
 	uint8_t  off_lo;	/* Temporary storage for split offset bytes */
-	uint32_t total_written;	/* Progress tracker */
-	uint32_t max_output;	/* Expected size from partition header */
+	size_t total_written;	/* Progress tracker */
+	size_t max_output;	/* Expected size from partition header */
 };
 
 static inline void

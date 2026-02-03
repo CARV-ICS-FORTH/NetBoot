@@ -84,6 +84,7 @@ int main(int argc, char *argv[])
 		}
 	}
 	fclose(fp);
+	ret = imgp_tftp_handler(imgp, NULL, 0);
 
 	/* Clean up parser state */
 	imgp_clear_state();

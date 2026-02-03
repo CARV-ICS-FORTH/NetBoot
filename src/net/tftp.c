@@ -22,7 +22,7 @@
 /* Misc helpers */
 
 static inline void
-tftp_print_rx_progress(uint16_t num_blocks, size_t num_bytes)
+tftp_print_rx_progress(size_t num_blocks, size_t num_bytes)
 {
 	if (num_blocks)
 		printf("\033[F");
@@ -207,7 +207,6 @@ tftp_default_output_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_b
 	if (in_buff_len > remaining_bytes)
 		return -ENOSPC;
 
-	/* If in_buff is NULL, this is just a space check, don't copy or advance. */
 	if (!in_buff || !in_buff_len)
 		return out->bytes_out;
 
@@ -252,12 +251,6 @@ tftp_request_file(const char* req_filename, tftp_output_handler_fn output_cb, vo
 
 	INF("[TFTP] server address: %s, bootfilename (%s): %s\n", inet_print_ipv4(server_ip),
 	    (req_filename ? "requested" : "via DHCP"), filename);
-
-	/* Make sure out_ctx is valid */
-	if (output_cb(out_ctx, NULL, 0) == -EINVAL) {
-		ERR("[TFTP] output handler returned EINVAL, invalid out_ctx!\n");
-		return -EINVAL;
-	}
 
 	/* Pick a random client port above 1024, build Read Request (RRQ) packet, and send it. */
 	const uint16_t client_tid = (uint16_t) ((rand() & 0x3FF) + 1024);
@@ -370,15 +363,6 @@ tftp_request_file(const char* req_filename, tftp_output_handler_fn output_cb, vo
 			}
 			if (new_file_size > 0) {
 				DBG("[TFTP] got file size: %li\n", new_file_size);
-				/* Check if the file would fit in output */
-				if (output_cb(out_ctx, NULL, new_file_size) == -ENOSPC) {
-					ERR("[TFTP] requested file won't fit in output (%li)\n",
-					    new_file_size);
-					/* Send an error packet back to the server to indicate "disk is full" */
-					cmd = tftp_make_error(TFTP_ERROR_DISK_FULL, &cmd_len);
-					done = -ENOSPC;
-					break;
-				}
 				file_size = (size_t) new_file_size;
 			}
 

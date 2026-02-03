@@ -87,9 +87,8 @@ enum {
 
 /*
  * This will be called for every input block with in_buff pointing to the start of the block
- * and in_buff_len holding the block's size. If in_buff is NULL this can be used for checking
- * if in_buff_len will fit in output, if in_buff_len is less than the previous one (block size)
- * this indicates we reached the end of transmission.
+ * and in_buff_len holding the block's size. At the end of transmission it'll be called with
+ * in_buff == NULL and in_buff_len == 0, and it should return the total number of bytes written.
  *
  * Returns:
  * - Bytes written to output, if everything went ok, signals TFTP client to move forward

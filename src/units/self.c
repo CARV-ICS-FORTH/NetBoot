@@ -117,7 +117,7 @@ cleanup_mmap(void)
 	}
 }
 
-static int
+int
 unit_handler_self(unit_cmd_t cmd, uintptr_t *img_base, size_t *max_img_size)
 {
 	printf("[HOST_TEST] unit_handler_self called: cmd=%d\n", cmd);
