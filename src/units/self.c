@@ -84,8 +84,6 @@ REGISTER_UNIT_CB(UNIT_ID_SELF, unit_handler_self);
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <stdio.h>
-#include <errno.h>
 #include <string.h>
 
 /* Global state for current mmap region */
@@ -120,19 +118,19 @@ cleanup_mmap(void)
 int
 unit_handler_self(unit_cmd_t cmd, uintptr_t *img_base, size_t *max_img_size)
 {
-	printf("[HOST_TEST] unit_handler_self called: cmd=%d\n", cmd);
+	DBG("[HOST_TEST] unit_handler_self: cmd=%d\n", cmd);
 	switch(cmd) {
 		case UNIT_CMD_GET_REGION: {
 			/* Clean up previous mapping */
 			cleanup_mmap();
 
 			unsigned int type = (*img_base & 0xF);
-			printf("[HOST_TEST] UNIT_CMD_GET_REGION: type=%u\n", type);
+			DBG("[HOST_TEST] GET_REGION: type=%u part=%d\n", type, current_part_id);
 
 			/* For DTB (partition 1), max_img_size contains partition 0's actual size */
 			if (current_part_id == 1 && type == IMG_TYPE_DTB) {
 				part0_size = *max_img_size;
-				printf("[HOST_TEST] Partition 0 actual size: %zu bytes\n", part0_size);
+				DBG("[HOST_TEST] Part 0 actual size: %zu bytes\n", part0_size);
 			}
 
 			size_t size = 0;
@@ -155,12 +153,12 @@ unit_handler_self(unit_cmd_t cmd, uintptr_t *img_base, size_t *max_img_size)
 			/* Create and size the file */
 			int fd = open(filename, O_RDWR | O_CREAT | O_TRUNC, 0644);
 			if (fd < 0) {
-				perror("open");
+				ERR("open %s: %s\n", filename, strerror(errno));
 				return -errno;
 			}
 
 			if (ftruncate(fd, size) < 0) {
-				perror("ftruncate");
+				ERR("ftruncate %s: %s\n", filename, strerror(errno));
 				close(fd);
 				return -errno;
 			}
@@ -170,7 +168,7 @@ unit_handler_self(unit_cmd_t cmd, uintptr_t *img_base, size_t *max_img_size)
 			close(fd);  /* Can close fd after mmap */
 
 			if (addr == MAP_FAILED) {
-				perror("mmap");
+				ERR("mmap %s: %s\n", filename, strerror(errno));
 				return -errno;
 			}
 
@@ -180,7 +178,7 @@ unit_handler_self(unit_cmd_t cmd, uintptr_t *img_base, size_t *max_img_size)
 			*img_base = (uintptr_t)addr;
 			*max_img_size = size;
 
-			printf("[HOST_TEST] Partition %d: Created %s (%zu bytes) at %p\n",
+			DBG("[HOST_TEST] Part %d: %s (%zu bytes) at %p\n",
 			       current_part_id, filename, size, addr);
 			current_part_id++;
 
@@ -192,7 +190,7 @@ unit_handler_self(unit_cmd_t cmd, uintptr_t *img_base, size_t *max_img_size)
 		case UNIT_CMD_FSBL_JUMP:
 			/* Clean up and finish */
 			cleanup_mmap();
-			printf("[HOST_TEST] FSBL_JUMP: All partitions written, test complete\n");
+			DBG("[HOST_TEST] FSBL_JUMP: done\n");
 			return 0;
 		default:
 			return -EPROTO;

@@ -9,7 +9,7 @@ ifeq ($(MAKECMDGOALS),host)
 HOST_CC ?= gcc
 HOST_CFLAGS = -Wall -Wextra -O2 -g -I src/include -DHOST_TEST -DDEBUG
 HOST_LDFLAGS = -lpthread
-HOST_SOURCES = $(wildcard src/*.c src/net/*.c src/ether/rawsock_nic.c src/units/*.c)
+HOST_SOURCES = $(wildcard src/*.c src/net/*.c src/ether/rawsock_nic.c src/units/*.c src/crypto/*.c)
 HOST_OUTPUT = $(CURDIR)/build/netboot_host
 
 .PHONY: all clean test help host host-clean
@@ -21,7 +21,7 @@ include $(SDK_DIR)/build.mk
 TARGET ?= qemu
 
 # Application source files
-NETBOOT_SOURCES = $(wildcard src/*.c src/net/*.c src/ether/*.c src/units/*.c)
+NETBOOT_SOURCES = $(wildcard src/*.c src/net/*.c src/ether/*.c src/units/*.c src/crypto/*.c)
 
 # Patches for this specific application (overriding platform defaults)
 PATCH_SOURCES = $(SDK_DIR)/platform/patches/simple_printf.c

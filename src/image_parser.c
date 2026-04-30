@@ -8,6 +8,7 @@
  */
 #include <img.h>
 #include <lz4.h>	/* For lz4_init/lz4_process_chunk*/
+#include <crypto.h>	/* For crypto_* */
 #include <stdlib.h>	/* For malloc/free */
 #include <errno.h>	/* For error codes */
 #include <string.h>	/* For memcpy/memset */
@@ -144,6 +145,10 @@ imgp_init_state(void)
 		if (!imgp)
 			return NULL;
 		imgp_init_crc32_nibbles(imgp->crc32_nibbles);
+		imgp->crypto = NULL;
+	} else {
+		crypto_exit(imgp->crypto);
+		imgp->crypto = NULL;
 	}
 	imgp->global_hdr.raw = 0;
 	imgp->last_sep_hdr.raw = 0;
@@ -156,6 +161,7 @@ imgp_init_state(void)
 	imgp->remaining_chunk_bytes = 8;
 	imgp->remaining_part_chunks = 0;
 	imgp->out_ptr = 0;
+	imgp->payload_start = 0;
 	imgp->cur_handler = NULL;
 	imgp->part_count = 0;
 	return imgp;
@@ -164,7 +170,8 @@ imgp_init_state(void)
 void
 imgp_clear_state(void)
 {
-	if(imgp) {
+	if (imgp) {
+		crypto_exit(imgp->crypto);
 		free(imgp);
 		imgp = NULL;
 	}
@@ -185,6 +192,10 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 	/* Check if caller indicates we reached the end of input/transmission. */
 	if (!in_buff || !in_buff_len) {
 		DBG("[IMGP] end of input reached, state: %i\n", imgp->state);
+		if (imgp->state != IMGP_STATE_DONE) {
+			ERR("[IMGP] Truncated input (state=%d)\n", imgp->state);
+			return -EBADMSG;
+		}
 		return imgp->total_bytes_out;
 	}
 
@@ -222,16 +233,24 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 			/* Do we have a public key following or we just skip to the sep_hdr ? */
 			const size_t pubkey_size = imgp_get_pubkey_size(imgp->global_hdr.flags);
 			if (pubkey_size > 0) {
+				imgp->crypto = crypto_init((crypto_algo_t)imgp->global_hdr.flags);
+				if (!imgp->crypto)
+					return -ENOMEM;
 				/* Note: public key sizes are always a multiple of 8bytes */
 				imgp->chunks_to_skip = pubkey_size / 8;
 				imgp->state = IMGP_STATE_PUBKEY;
 			} else
 				imgp->state = IMGP_STATE_SEP_HDR;
+			DBG("[IMGP] Got global header (version %u):\n\tnum partitions: %u\n\ttotal size: %u\n\tflags: %x\n",
+			    imgp->global_hdr.hdr_version, imgp->global_hdr.part_count, imgp->global_hdr.total_size,
+			    imgp->global_hdr.flags);
 			break;
 		case IMGP_STATE_PUBKEY:
-			/* TODO: Store public key */
+			/* Stream public key bytes into the crypto context */
+			if (crypto_set_pubkey(imgp->crypto, imgp->chunk_bytes, 8) < 0)
+				return -EBADMSG;
 			imgp->chunks_to_skip--;
-			/* We expect the signature of global_hdr + pubkey when done */
+			/* When the full key is in, expect the global-header signature */
 			if (imgp->chunks_to_skip == 0) {
 				const size_t sig_size = imgp_get_signature_size(imgp->global_hdr.flags);
 				if (sig_size > 0) {
@@ -243,20 +262,35 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 					return -EPROTO;
 			}
 			break;
-		case IMGP_STATE_SIG_GLOBAL:
-		case IMGP_STATE_SIG_PART:
-			/* TODO: Check signature using pubkey */
+		case IMGP_STATE_SIG_GLOBAL: {
+			/*
+			 * Global signature authenticates the global header only.
+			 * The pubkey is already bound via Ed25519's A term in
+			 * SHA-512(R || A || M), so including it in M is redundant.
+			 */
+			if (crypto_set_signature(imgp->crypto, imgp->chunk_bytes, 8) < 0)
+				return -EBADMSG;
 			imgp->chunks_to_skip--;
-			/* When done with signature we expect a sep_hdr */
-			if (imgp->chunks_to_skip == 0)	
+			if (imgp->chunks_to_skip == 0) {
+				if (crypto_verify_signature(imgp->crypto,
+				                            imgp->global_hdr.raw,
+				                            NULL, 0) != 0) {
+					ERR("[IMGP] Global signature verification failed\n");
+					return -EBADMSG;
+				}
+				DBG("[IMGP] Global header signature verified\n");
 				imgp->state = IMGP_STATE_SEP_HDR;
+			}
 			break;
+		}
 		case IMGP_STATE_SEP_HDR:
 			imgp->last_sep_hdr.raw = imgp->chunk;
 
 			/* Validate CRC before moving on */
-			if (~imgp->crc32_val != CRC32_REMAINDER)
+			if (~imgp->crc32_val != CRC32_REMAINDER) {
+				ERR("[IMGP] Invalid CRC32\n");
 				return -EBADMSG;
+			}
 
 			/* Check if done */
 			if (imgp->last_sep_hdr.next_part_size == 0) {
@@ -264,27 +298,38 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 				if (imgp->part_count != (uint8_t)imgp->global_hdr.part_count)
 					return -EPROTO;
 				imgp->state = IMGP_STATE_DONE;
+				DBG("[IMGP] Got final separator hdr, parser is done processing\n");
 				break;
 			}
 
-			/* Setup remaining chunks for partition, round up to the
-			 * next chunk to also include padding. */
-			imgp->remaining_part_chunks = (imgp->last_sep_hdr.next_part_size + 7) / 8;
+			/* Count only payload chunks (excludes part_hdr and sig). */
+			size_t sig_size = imgp_get_signature_size(imgp->global_hdr.flags);
+			if (imgp->last_sep_hdr.next_part_size < 8 + sig_size)
+				return -EBADMSG;
+			imgp->remaining_part_chunks =
+				(imgp->last_sep_hdr.next_part_size - 8 - sig_size) / 8;
 			imgp->state = IMGP_STATE_PART_HDR;
+			DBG("[IMGP] Got separator header:\n\tnext part size: %u\n\trolling crc: %X\n",
+			    imgp->last_sep_hdr.next_part_size, imgp->last_sep_hdr.rolling_crc);
 			break;
-		case IMGP_STATE_PART_HDR:
+		case IMGP_STATE_PART_HDR: {
 			/* Save previous image's size in case unit handler requires it
-			 * to determine the base addres for the new partiion. */
+			 * to determine the base address for the new partition. */
 			size_t prev_img_size = imgp->cur_part_hdr.image_size;
 
 			imgp->cur_part_hdr.raw = imgp->chunk;
-			imgp->remaining_part_chunks--;
 			imgp->part_count++;
 
 			/* Validate partition header */
 			ret = imgp_validate_part_hdr(imgp->cur_part_hdr.raw);
-			if (ret < 0)
+			if (ret < 0) {
+				ERR("[IMGP] Invalid partition header\n");
 				return ret;
+			}
+
+			DBG("[IMGP] Got partition header (version %u):\n\ttype: %u\n\tunit: %u\n\tflags: %x,\n\tsize: %u\n",
+			    imgp->cur_part_hdr.version, imgp->cur_part_hdr.type, imgp->cur_part_hdr.unit_id,
+			    imgp->global_hdr.flags, imgp->cur_part_hdr.image_size);
 
 			/* Get unit handler */
 			imgp->cur_handler = imgp_get_unit_handler(imgp->cur_part_hdr.unit_id);
@@ -309,13 +354,28 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 			if (imgp->cur_part_hdr.flags == PART_FLAG_LZ4)
 				lz4_init(&imgp->lz4_ctx, (uint8_t*)imgp->out_ptr, imgp->cur_part_hdr.image_size);
 
-			/* TODO: Start SHA with imgp->cur_part_hdr, for the signature check */
-
-			imgp->state = IMGP_STATE_PAYLOAD;
+			/* Sig is before payload in the new format */
+			if (imgp->crypto) {
+				imgp->chunks_to_skip =
+					imgp_get_signature_size(imgp->global_hdr.flags) / 8;
+				imgp->state = IMGP_STATE_SIG_PART;
+			} else {
+				imgp->payload_start = imgp->out_ptr;
+				imgp->state = IMGP_STATE_PAYLOAD;
+			}
 			break;
-
+		}
+		case IMGP_STATE_SIG_PART:
+			/* Accumulate partition signature before the payload arrives */
+			if (crypto_set_signature(imgp->crypto, imgp->chunk_bytes, 8) < 0)
+				return -EBADMSG;
+			imgp->chunks_to_skip--;
+			if (imgp->chunks_to_skip == 0) {
+				imgp->payload_start = imgp->out_ptr;
+				imgp->state = IMGP_STATE_PAYLOAD;
+			}
+			break;
 		case IMGP_STATE_PAYLOAD:
-			/* TODO: Add payload to SHA for signature check */
 			if (imgp->cur_part_hdr.flags == PART_FLAG_LZ4) {
 				/* Compressed: Feed chunks to LZ4 decompressor which manages
 				 * output pointer internally and stops at max_output, ignoring
@@ -345,15 +405,24 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 				/* Check if partition complete */
 				if (imgp->remaining_part_chunks == 0) {
 					/* Verify we got the expected uncompressed size */
-					if (imgp->lz4_ctx.total_written != imgp->cur_part_hdr.image_size)
+					if (imgp->lz4_ctx.total_written != imgp->cur_part_hdr.image_size) {
+						ERR("[IMGP] Payload decompression failed\n");
 						return -EBADMSG;
+					}
+					DBG("[IMGP] Payload decompressed\n");
 
-					size_t sig_size = imgp_get_signature_size(imgp->global_hdr.flags);
-					if (sig_size > 0) {
-						imgp->chunks_to_skip = sig_size / 8;
-						imgp->state = IMGP_STATE_SIG_PART;
-					} else
-						imgp->state = IMGP_STATE_SEP_HDR;
+					if (imgp->crypto) {
+						if (crypto_verify_signature(
+						        imgp->crypto,
+						        imgp->cur_part_hdr.raw,
+						        (void *)imgp->payload_start,
+						        imgp->cur_part_hdr.image_size) != 0) {
+							ERR("[IMGP] Partition sig verification failed\n");
+							return -EBADMSG;
+						}
+						DBG("[IMGP] Payload signature verified\n");
+					}
+					imgp->state = IMGP_STATE_SEP_HDR;
 				}
 			} else {
 				/* Uncompressed: Copy 8-byte chunks directly, including padding.
@@ -380,12 +449,18 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 
 				/* Check if partition complete */
 				if (imgp->remaining_part_chunks == 0) {
-					size_t sig_size = imgp_get_signature_size(imgp->global_hdr.flags);
-					if (sig_size > 0) {
-						imgp->chunks_to_skip = sig_size / 8;
-						imgp->state = IMGP_STATE_SIG_PART;
-					} else
-						imgp->state = IMGP_STATE_SEP_HDR;
+					if (imgp->crypto) {
+						if (crypto_verify_signature(
+						        imgp->crypto,
+						        imgp->cur_part_hdr.raw,
+						        (void *)imgp->payload_start,
+						        imgp->cur_part_hdr.image_size) != 0) {
+							ERR("[IMGP] Partition sig verification failed\n");
+							return -EBADMSG;
+						}
+						DBG("[IMGP] Partition signature verified\n");
+					}
+					imgp->state = IMGP_STATE_SEP_HDR;
 				}
 			}
 			break;

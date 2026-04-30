@@ -11,6 +11,7 @@
 #include <stdint.h>	/* For typed ints */
 #include <stddef.h>	/* For size_t */
 #include <lz4.h>	/* For lz4_ctx */
+#include <crypto.h>	/* For crypto_ctx_t */
 
 /**************\
 * Image format *
@@ -72,13 +73,13 @@
  * <Sep. header 0 (omitted from image)>: [8 + pubkey_size (optional)][FFFFFFFF]
  * <Global header>
  * <Public key (optional)>
- * <Signature (optional)>
+ * <Signature (optional)>       <- authenticates global_hdr (pubkey bound via A in SHA-512)
  *
- * <Sep. header 1>
+ * <Sep. header 1>              <- next_part_size = 8 + sig_size + payload_padded
  *
  * <Part. 1 header>
+ * <Part. 1 signature (optional)> <- BEFORE payload so the sig is in memory before hashing
  * <Part. 1 payload>
- * <Part. 1 signature (optional)>
  *
  * <Sep. header 2>
  * .
@@ -191,8 +192,8 @@ enum imgp_state {
 	IMGP_STATE_SIG_GLOBAL,
 	IMGP_STATE_SEP_HDR,
 	IMGP_STATE_PART_HDR,
+	IMGP_STATE_SIG_PART,	/* sig comes before payload in the new format */
 	IMGP_STATE_PAYLOAD,
-	IMGP_STATE_SIG_PART,
 	IMGP_STATE_DONE
 };
 
@@ -213,8 +214,12 @@ struct img_parser_state {
 	size_t remaining_part_chunks;
 	size_t chunks_to_skip;
 	uintptr_t out_ptr;
+	uintptr_t payload_start;	/* start of decompressed output for sig verify */
 	unit_handler_fn cur_handler;
 	uint8_t part_count;
+
+	/* Crypto context — non-NULL when global_hdr.flags != GBL_FLAG_NO_CRYPTO */
+	crypto_ctx_t *crypto;
 };
 
 typedef struct img_parser_state ImgpState;
