@@ -18,6 +18,11 @@ NetBoot is a minimal network bootloader designed to run on bare-metal embedded s
   - VirtIO-Net MMIO (for virtual machines)
   - Raw socket interface (for host testing)
 
+- **Image Format**
+  - LZ4-compressed multi-partition container
+  - Rolling CRC32 validated at every separator (streaming-friendly)
+  - Optional Ed25519 signatures verified per partition before decompress
+
 - **Build Targets**
   - Bare-metal cross-compilation for embedded targets
   - Host test mode for development and debugging on Linux
@@ -79,16 +84,23 @@ sudo ./build/netboot_host
 
 ### Creating Boot Images
 
-NetBoot uses a custom container format with LZ4 compression and CRC32 validation. Use the provided tools to build and inspect boot images.
+Boot images are built with `nbimgt`, a single C tool under [image_tools/](image_tools/):
+
+```bash
+cd image_tools && make
+```
+
+Requires `liblz4-dev` and `libssl-dev`.
 
 #### Building a Boot Image
 
 ```bash
-# Install Python dependencies
-pip install lz4
+# Unsigned image
+./image_tools/nbimgt build boot.bin boot.dtb tftp-root/boot.img
 
-# Create boot.img from boot.bin and boot.dtb
-./image_tools/build_container.py boot.bin boot.dtb tftp-root/boot.img
+# Signed image (generates an Ed25519 key on first use)
+./image_tools/nbimgt build --sign signing_key.pem \
+    boot.bin boot.dtb tftp-root/boot.img
 ```
 
 **Input files:**
@@ -96,26 +108,26 @@ pip install lz4
 - `boot.dtb` - Device tree blob for the target platform
 
 **Output:**
-- `tftp-root/boot.img` - LZ4-compressed container with CRC32 validation
-
-The tool automatically compresses both files with LZ4 and packages them with partition headers and rolling CRC32 checksums for corruption detection.
+- `tftp-root/boot.img` - LZ4-compressed container with CRC32 and, when
+  `--sign` is used, per-partition Ed25519 signatures
 
 #### Inspecting a Boot Image
 
-Verify the structure and integrity of a boot image:
-
 ```bash
-./image_tools/inspect_container.py tftp-root/boot.img
+./image_tools/nbimgt verify tftp-root/boot.img
 ```
 
-This tool will:
-- Display the global header (magic, version, partition count, flags)
-- Show each partition header (type, unit ID, compression, sizes)
-- Validate CRC32 checksums at each separator
-- Verify 8-byte alignment and padding
-- Report any corruption or format errors
+This validates the global header, all signatures (if signed), CRC32
+checksums at every separator, and decompresses each payload. Signature
+verification cross-checks the built-in Ed25519 implementation against
+OpenSSL to catch divergence.
 
-Place the resulting `boot.img` in [tftp-root/](tftp-root/) for TFTP serving during testing.
+See [image_tools/README.md](image_tools/README.md) for full documentation
+of `nbimgt`, key management (`pinentry`, `memfd_secret`-backed key storage),
+and the container layout.
+
+Place the resulting `boot.img` in [tftp-root/](tftp-root/) for TFTP serving
+during testing.
 
 ## Project Structure
 
