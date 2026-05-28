@@ -1,57 +1,87 @@
 # NetBoot Image Tools
 
-Tools for building and manipulating NetBoot image containers.
+`nbimgt` — build, sign, and verify NetBoot image containers (`.img` format).
 
-## build_container.py
-
-Creates a bootable image container from FSBL and DTB files according to the format specified in `img.h`.
-
-### Features
-- LZ4 high compression for both images
-- CRC32 validation at each partition boundary
-- No signature support (uses `GBL_FLAG_NO_CRYPTO`)
-- Automatic 8-byte alignment and padding
-
-### Requirements
+## Building
 
 ```bash
-pip install lz4
+make
 ```
 
-### Usage
+Requires: `gcc`, `liblz4-dev`, `libssl-dev`.
+
+## Commands
+
+### build
+
+Packs an FSBL binary and a DTB into a compressed, optionally signed container.
 
 ```bash
-./build_container.py <boot.bin> <boot.dtb> [output.img]
+./nbimgt build [-s KEY.pem] [-r ID] FSBL DTB [OUTPUT]
 ```
 
-**Arguments:**
-- `boot.bin` - FSBL/firmware/kernel image (will be compressed)
-- `boot.dtb` - Device Tree Blob (will be compressed)
-- `output.img` - Output container file (default: `boot.img`)
+| Argument | Description |
+|---|---|
+| `FSBL` | Path to the FSBL / boot binary |
+| `DTB` | Path to the device tree blob |
+| `OUTPUT` | Output file (default: `boot.img`) |
+| `-s, --sign KEY.pem` | Sign with an Ed25519 key; generates the key if the file does not exist |
+| `-r, --release-id ID` | Release identifier, hex or decimal (default: `0x0001`) |
 
-### Example
+Both partitions are LZ4-compressed. If `--sign` is given, the global header, each partition header, and the final trailer are all individually signed so the streaming TFTP parser can authenticate as it receives data.
+
+### verify
+
+Reads a container, runs the crypto self-test, verifies all signatures and checksums, and optionally decompresses the payloads.
 
 ```bash
-./build_container.py ../build/boot.bin ../build/boot.dtb boot.img
+./nbimgt verify [-d] [-t] [IMAGE]
 ```
 
-### Output Format
+| Argument | Description |
+|---|---|
+| `IMAGE` | Container file (default: `../tftp-root/boot.img`) |
+| `-d, --dump` | Decompress partitions to `/tmp/part0.bin`, `/tmp/part1.bin` |
+| `-t, --test-parser` | Feed the image through the streaming TFTP parser instead of the direct reader |
 
-The generated container follows this structure:
+### keygen
+
+Generates an Ed25519 key pair. The private key is stored as an encrypted PKCS#8 PEM file; the public key is written to `<KEY>.pub`.
+
+```bash
+./nbimgt keygen KEY.pem
+```
+
+Passphrase entry is handled via `pinentry` (gpg-agent's pinentry program). The private key is only decrypted in memory during signing and is kept on a `mprotect(PROT_NONE)`-guarded page between uses.
+
+## Key management
+
+- Private keys are PKCS#8 PEM files encrypted with the passphrase you supply at generation time.
+- At runtime the passphrase is collected via `pinentry` over an Assuan pipe; it is never written to disk or passed through the environment.
+- The decoded private key lives on a dedicated `mmap` page that is marked `PROT_NONE` when not actively signing. Any failure to restore the guard aborts immediately after zeroing the key material.
+- `PR_SET_DUMPABLE` is set at startup so the process cannot be core-dumped or ptrace-attached.
+- OpenSSL's secure heap (`CRYPTO_secure_malloc_init`) is used for all sensitive allocations.
+
+## Container format
 
 ```
-<Global header>         (8 bytes)
-<Separator header 1>    (8 bytes)
-<Partition 1 header>    (8 bytes) - FSBL, LZ4 compressed
-<Partition 1 payload>   (variable, padded to 8-byte boundary)
-<Separator header 2>    (8 bytes)
-<Partition 2 header>    (8 bytes) - DTB, LZ4 compressed
-<Partition 2 payload>   (variable, padded to 8-byte boundary)
-<Separator header 3>    (8 bytes) - Final CRC32
+[ global_hdr_t  ]  flags, release-id, algo, public-key, signature
+[ sep_hdr_t     ]  next-partition size, rolling CRC32
+[ part_hdr_t    ]  type (FSBL), flags (LZ4), uncompressed size, signature
+[ payload       ]  LZ4-compressed FSBL, 8-byte aligned
+[ sep_hdr_t     ]  next-partition size, rolling CRC32
+[ part_hdr_t    ]  type (DTB),  flags (LZ4), uncompressed size, signature
+[ payload       ]  LZ4-compressed DTB,  8-byte aligned
+[ sep_hdr_t     ]  size=0 (end), final CRC32
 ```
 
-Each separator header contains:
-- Next partition size (32-bit)
-- Rolling CRC32 checksum (32-bit)
+The streaming TFTP parser validates the CRC32 at each separator and — when the image is signed — verifies each signature before decompressing the corresponding payload.
 
-The parser validates the CRC32 at each separator to detect corruption early.
+## Makefile targets
+
+| Target | Description |
+|---|---|
+| `make` | Build `nbimgt` |
+| `make test` | Build an unsigned `../tftp-root/boot.img` and run it through the streaming parser, then print MD5 checksums comparing the original files with the decompressed output |
+| `make test-signed` | Generate a throw-away key, build a signed image, verify it, run it through the parser, and print checksums |
+| `make clean` | Remove the binary, test keys, and generated images |

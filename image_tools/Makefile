@@ -1,9 +1,14 @@
 # Image Tools Makefile
 
-VERIFY_CONTAINER = verify_container
+TARGET = nbimgt
 
 SRC_DIR = ../src
-SRCS = verify_container.c \
+SRCS = nbimgt.c \
+       res.c \
+       crypto_ops.c \
+       key_file.c \
+       partition.c \
+       container.c \
        $(SRC_DIR)/image_parser.c \
        $(SRC_DIR)/lz4.c \
        $(SRC_DIR)/units/self.c \
@@ -12,25 +17,32 @@ SRCS = verify_container.c \
 
 CC     = gcc
 CFLAGS = -Wall -Wextra -O2 -g \
+         -D_GNU_SOURCE \
          -I$(SRC_DIR)/include \
          -DHOST_TEST -DDEBUG
-LDFLAGS = -lssl -lcrypto
+LDFLAGS = -lssl -lcrypto -llz4
 
-all: $(VERIFY_CONTAINER)
+all: $(TARGET)
 
-$(VERIFY_CONTAINER): $(SRCS)
-	@echo "Building container verifier..."
+$(TARGET): $(SRCS)
+	@echo "Building $(TARGET)..."
 	$(CC) $(CFLAGS) $(SRCS) -o $@ $(LDFLAGS)
-	@echo "Done! Run with: ./$(VERIFY_CONTAINER) [path/to/boot.img]"
-	@echo "       or:      ./$(VERIFY_CONTAINER) -d [path/to/boot.img]  (dump partitions to /tmp/partN.bin)"
-	@echo "       or:      ./$(VERIFY_CONTAINER) -t [path/to/boot.img]  (streaming parser test)"
+	@echo "Done! Run with:"
+	@echo "  ./$(TARGET) build [--sign KEY.pem] FSBL DTB [OUTPUT]"
+	@echo "  ./$(TARGET) verify [--dump] [--test-parser] IMAGE"
+	@echo "  ./$(TARGET) keygen KEY.pem"
 
 clean:
-	rm -f $(VERIFY_CONTAINER) test_key.pem test_key.pub boot_signed.img
+	rm -f $(TARGET) test_key.pem test_key.pem.pub boot_signed.img \
+	      ../tftp-root/boot.img
 
-test: $(VERIFY_CONTAINER)
+test: $(TARGET)
+	@echo "Building unsigned image..."
+	./$(TARGET) build ../tftp-root/boot.bin ../tftp-root/boot.dtb \
+		../tftp-root/boot.img
+	@echo ""
 	@echo "Running parser test (unsigned)..."
-	./$(VERIFY_CONTAINER) -t ../tftp-root/boot.img
+	./$(TARGET) verify --test-parser ../tftp-root/boot.img
 	@echo ""
 	@echo "Verifying output files..."
 	@echo "=== FSBL Checksums ==="
@@ -39,20 +51,19 @@ test: $(VERIFY_CONTAINER)
 	@echo "=== DTB Checksums ==="
 	@md5sum ../tftp-root/boot.dtb /tmp/part1.bin || true
 
-test-signed: $(VERIFY_CONTAINER)
+test-signed: $(TARGET)
 	@echo "Generating test Ed25519 key..."
-	python3 build_container.py --keygen test_key.pem
+	./$(TARGET) keygen test_key.pem
 	@echo ""
 	@echo "Building signed image..."
-	python3 build_container.py \
-		../tftp-root/boot.bin ../tftp-root/boot.dtb boot_signed.img \
-		--sign test_key.pem
+	./$(TARGET) build --sign test_key.pem \
+		../tftp-root/boot.bin ../tftp-root/boot.dtb boot_signed.img
 	@echo ""
 	@echo "Inspecting signed image..."
-	./$(VERIFY_CONTAINER) boot_signed.img
+	./$(TARGET) verify boot_signed.img
 	@echo ""
 	@echo "Running parser test on signed image..."
-	./$(VERIFY_CONTAINER) -t boot_signed.img
+	./$(TARGET) verify --test-parser boot_signed.img
 	@echo ""
 	@echo "Verifying output files..."
 	@echo "=== FSBL Checksums ==="
