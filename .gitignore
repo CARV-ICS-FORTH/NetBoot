@@ -6,6 +6,7 @@ tftp-root/*
 
 # Image tools test binaries
 image_tools/test_parser
+image_tools/nbimgt
 
 # Hidden and temporary files
 .*

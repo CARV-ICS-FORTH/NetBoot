@@ -52,15 +52,7 @@ Generates an Ed25519 key pair. The private key is stored as an encrypted PKCS#8 
 ./nbimgt keygen KEY.pem
 ```
 
-Passphrase entry is handled via `pinentry` (gpg-agent's pinentry program). The private key is only decrypted in memory during signing and is kept on a `mprotect(PROT_NONE)`-guarded page between uses.
-
-## Key management
-
-- Private keys are PKCS#8 PEM files encrypted with the passphrase you supply at generation time.
-- At runtime the passphrase is collected via `pinentry` over an Assuan pipe; it is never written to disk or passed through the environment.
-- The decoded private key lives on a dedicated `mmap` page that is marked `PROT_NONE` when not actively signing. Any failure to restore the guard aborts immediately after zeroing the key material.
-- `PR_SET_DUMPABLE` is set at startup so the process cannot be core-dumped or ptrace-attached.
-- OpenSSL's secure heap (`CRYPTO_secure_malloc_init`) is used for all sensitive allocations.
+Passphrase entry is handled via `pinentry` (gpg-agent's pinentry program).
 
 ## Container format
 

@@ -134,27 +134,26 @@ during testing.
 ```
 NetBoot/
 ├── src/
-│   ├── main.c              # Main entry point
+│   ├── main.c              # Main entry point (DHCP → TFTP → parse → jump)
+│   ├── image_parser.c      # Streaming container parser (CRC + sig + LZ4)
+│   ├── lz4.c               # Streaming LZ4 decompressor
 │   ├── net/                # Network protocol implementations
-│   │   ├── dhcp.c          # DHCP client
-│   │   ├── dhcp_options.c  # DHCP option parsing
-│   │   ├── tftp.c          # TFTP client
-│   │   └── net.c           # Network utilities
-│   ├── ether/              # Network driver implementations
-│   │   ├── emaclite_nic.c  # Xilinx EthernetLite
-│   │   ├── axidma_nic.c    # Xilinx AXI DMA
-│   │   ├── virtionet_mmio_nic.c  # VirtIO-Net
-│   │   └── rawsock_nic.c   # Raw socket (host)
-│   ├── units/              # Modular unit implementations
-│   │   └── self.c          # Self-test unit
-│   ├── include/            # Header files
-│   ├── lz4.c               # LZ4 decompression
-│   └── image_parser.c      # Image format parser
-├── image_tools/            # Image manipulation tools
-├── tftp-root/              # TFTP server root directory
+│   │   ├── net.c           # ARP, IPv4, UDP send/receive
+│   │   ├── dhcp.c          # DHCP client state machine
+│   │   ├── dhcp_options.c  # DHCP option parsing/building
+│   │   └── tftp.c          # TFTP client with blksize/tsize/windowsize
+│   ├── ether/              # NIC drivers (out of scope for this overview)
+│   ├── crypto/             # Built-in crypto for signature verification
+│   │   ├── sha512.c        # SHA-512 (FIPS 180-4)
+│   │   └── ed25519.c       # Ed25519 verify (SUPERCOP ref10) + self-test
+│   ├── units/              # Per-unit handlers (selected via section table)
+│   │   └── self.c          # Unit 0: this device — region layout + jump
+│   └── include/            # Public headers (img.h, crypto.h, net.h, …)
+├── image_tools/            # nbimgt: build / sign / verify containers
+├── tftp-root/              # Test TFTP root (boot.bin, boot.dtb, boot.img)
 ├── build/                  # Build output directory
 ├── Makefile                # Build system
-└── unit_sections.ld        # Linker script for units
+└── unit_sections.ld        # Linker script for units (REGISTER_UNIT_CB table)
 ```
 
 ## Testing
