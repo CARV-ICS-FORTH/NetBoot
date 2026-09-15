@@ -71,6 +71,14 @@ dhcp_grab_option_offset(const uint8_t *msg_buff, uint8_t option_id)
 	 * by our caller only for the options that we know about, doing it for
 	 * all options (for a more strict validation) is too expensive. Here we'll
 	 * just grab an option the first time we see it.
+	 *
+	 * Note: while walking we read the length octet at [i + 1] (and the overload
+	 * type at [i + 2]) of whatever option we're on. A malformed length can leave
+	 * i at options_field_size - 1, so those reads can spill up to 2 octets past
+	 * the logical options field. That's harmless here: the received frame lives
+	 * in a fixed RX buffer that's always >= a full-size message, so we only ever
+	 * read into the frame's ethernet padding, and a bogus length just advances i
+	 * past options_field_size and trips the loop bound below -> we fail closed.
 	 */
 	for (i = 4; i < options_field_size; i++) {
 		/* We are two octets before the end of our current options field,

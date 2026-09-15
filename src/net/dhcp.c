@@ -52,7 +52,7 @@ enum dhcp_validate_err {
 	DHCP_ERR_ACK_HAS_CLIENT_ID,		/* DHCPACK includes client identifier (forbidden) */
 	DHCP_ERR_NAK_IPADDR_SET,		/* DHCPNAK has client/offered/server IP set */
 	DHCP_ERR_NAK_SNAME_NOT_EMPTY,		/* DHCPNAK has non-empty sname field */
-	DHCP_ERR_NAK_HOSTNAME_NOT_EMPTY,	/* DHCPNAK has non-empty hostname field */
+	DHCP_ERR_NAK_FILENAME_NOT_EMPTY,	/* DHCPNAK has non-empty filename field */
 	DHCP_ERR_NAK_UNEXPECTED_OPTIONS,	/* DHCPNAK has unexpected options */
 	DHCP_ERR_UNKNOWN_MSG_TYPE,		/* Unknown or unhandled message type */
 };
@@ -299,14 +299,14 @@ dhcp_reply_validate(const uint8_t *buff, uint8_t expected_msg_type)
 			/* Note: since the options overload option MUST_NOT be present in a DHCPNACK
 			 * there won't be any options in sname/file fields, and since they are also
 			 * unused, they should be empty. */
-			if (dhcp_check_empty_field(in_msg->server_hostname, DHCP_SERVER_HOSTNAME_LEN)) {
+			if (!dhcp_check_empty_field(in_msg->server_hostname, DHCP_SERVER_HOSTNAME_LEN)) {
 				DBG("[DHCP] got a DHCPNACK with non-empty sname field !\n");
 				return -DHCP_ERR_NAK_SNAME_NOT_EMPTY;
 			}
 
-			if (dhcp_check_empty_field(in_msg->server_hostname, DHCP_SERVER_HOSTNAME_LEN)) {
-				DBG("[DHCP] got a DHCPNACK with non-empty hostname field !\n");
-				return -DHCP_ERR_NAK_HOSTNAME_NOT_EMPTY;
+			if (!dhcp_check_empty_field(in_msg->boot_filename, DHCP_FILENAME_LEN)) {
+				DBG("[DHCP] got a DHCPNACK with non-empty file field !\n");
+				return -DHCP_ERR_NAK_FILENAME_NOT_EMPTY;
 			}
 
 			/* Check for the remaining allowed options and count them */
