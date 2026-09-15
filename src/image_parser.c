@@ -329,7 +329,7 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 
 			DBG("[IMGP] Got partition header (version %u):\n\ttype: %u\n\tunit: %u\n\tflags: %x,\n\tsize: %u\n",
 			    imgp->cur_part_hdr.version, imgp->cur_part_hdr.type, imgp->cur_part_hdr.unit_id,
-			    imgp->global_hdr.flags, imgp->cur_part_hdr.image_size);
+			    imgp->cur_part_hdr.flags, imgp->cur_part_hdr.image_size);
 
 			/* Get unit handler */
 			imgp->cur_handler = imgp_get_unit_handler(imgp->cur_part_hdr.unit_id);
