@@ -536,13 +536,42 @@ net_wait_for_udp(uint16_t dport, ssize_t *payload_size, uint32_t *remote_ip,
 
 		/* Before we attempt to read it for verifying its checksum make sure the size
 		 * field is correct so that we don't go past our receive buffer. Use uint32_t for
-		 * tot_len to avoid int overflow. */
-		uint32_t tot_len = (uint32_t) ntohs(net_get_u16_aligned(&in_frm->ip_hdr.tot_len)) +
-						    sizeof(struct eth_hdr);
-		if (tot_len > *payload_size) {
+		 * tot_len to avoid int overflow.
+		 *
+		 * Note: we don't support IP fragmentation (we never reassemble, and cap our own
+		 * sends below the MTU), so a datagram always arrives whole inside a single Ethernet
+		 * frame. That's what makes this comparison meaningful: the ethernet layer already
+		 * bounded *payload_size to the MTU / its RX buffer, so requiring the IP header's
+		 * tot_len to fit within it guarantees the whole datagram we're about to parse is
+		 * within the received frame. */
+		uint32_t ip_tot_len = (uint32_t) ntohs(net_get_u16_aligned(&in_frm->ip_hdr.tot_len));
+		uint32_t tot_len = ip_tot_len + sizeof(struct eth_hdr);
+		if (tot_len > (uint32_t) *payload_size) {
 			DBG_NET("[NET] received UDP packet larger than received buffer (%i > %li)\n",
 			    tot_len, *payload_size);
 			*payload_size = -EMSGSIZE;
+			continue;
+		}
+
+		/* The UDP header carries its own length field (dgram_len) which is distinct from
+		 * the ip_hdr.tot_len we just validated against the frame. Don't trust it blindly:
+		 * the IP payload length (derived from the frame-bounded tot_len, and exact since
+		 * we already verified ihl has no options above) is our upper bound, and the UDP
+		 * datagram must be at least large enough to hold its own header. Otherwise a bogus
+		 * dgram_len -e.g. from a corrupt packet, or one that omits the optional UDP
+		 * checksum so nothing else would catch it- would have us hand the caller a
+		 * payload_size that points past the data we actually received. */
+		if (ip_tot_len < sizeof(struct ipv4_hdr) + sizeof(struct udp_hdr)) {
+			DBG_NET("[NET] got UDP packet with IP tot_len too small: %u\n", ip_tot_len);
+			*payload_size = -EBADMSG;
+			continue;
+		}
+		uint32_t ip_payload_len = ip_tot_len - sizeof(struct ipv4_hdr);
+		uint16_t udp_len = ntohs(net_get_u16_aligned(&in_frm->udp_hdr.dgram_len));
+		if (udp_len < sizeof(struct udp_hdr) || udp_len > ip_payload_len) {
+			DBG_NET("[NET] got UDP packet with inconsistent length (udp %u, ip payload %u)\n",
+			    udp_len, ip_payload_len);
+			*payload_size = -EBADMSG;
 			continue;
 		}
 
@@ -551,7 +580,7 @@ net_wait_for_udp(uint16_t dport, ssize_t *payload_size, uint32_t *remote_ip,
 		if (csum_saved) {
 			net_set_u16_aligned(0, &in_frm->udp_hdr.dgram_csum);
 			csum_check = inet_csum(inbuff + sizeof(struct eth_hdr) + sizeof(struct ipv4_hdr),
-					       ntohs(net_get_u16_aligned(&in_frm->udp_hdr.dgram_len)),
+					       udp_len,
 					       IPV4_PROTO_UDP);
 			if (csum_saved != csum_check) {
 				WRN("[NET] got UDP packet with invalid checksum\n");
@@ -570,7 +599,7 @@ net_wait_for_udp(uint16_t dport, ssize_t *payload_size, uint32_t *remote_ip,
 			continue;
 		}
 
-		*payload_size = ntohs(net_get_u16_aligned(&in_frm->udp_hdr.dgram_len)) - sizeof(struct udp_hdr);
+		*payload_size = udp_len - sizeof(struct udp_hdr);
 		if (remote_ip)
 			*remote_ip = net_get_u32(&in_frm->ip_hdr.src_addr);
 		if (remote_port)
