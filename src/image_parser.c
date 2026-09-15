@@ -350,6 +350,26 @@ imgp_tftp_handler(void* out_ctx, const uint8_t *in_buff, uint32_t in_buff_len)
 			if (max_size < imgp->cur_part_hdr.image_size)
 				return -ENOSPC;
 
+			/* For an uncompressed payload the on-wire bytes are exactly the image
+			 * padded up to an 8-byte boundary, so the payload chunk count is fully
+			 * determined by image_size. remaining_part_chunks though came from the
+			 * separator's next_part_size, while image_size lives in the partition
+			 * header we just read -nothing has tied the two together yet. Since the
+			 * uncompressed copy loop is driven by remaining_part_chunks (and, unlike
+			 * the LZ4 path, has no output clamp of its own), a next_part_size larger
+			 * than image_size would let it write past the region we just sized. Reject
+			 * the mismatch here. */
+			if (imgp->cur_part_hdr.flags != PART_FLAG_LZ4) {
+				uint64_t expected_chunks =
+					((uint64_t)imgp->cur_part_hdr.image_size + 7) / 8;
+				if (imgp->remaining_part_chunks != expected_chunks) {
+					ERR("[IMGP] uncompressed payload size mismatch (chunks %zu vs expected %llu)\n",
+					    imgp->remaining_part_chunks,
+					    (unsigned long long)expected_chunks);
+					return -EBADMSG;
+				}
+			}
+
 			/* Setup for payload */
 			if (imgp->cur_part_hdr.flags == PART_FLAG_LZ4)
 				lz4_init(&imgp->lz4_ctx, (uint8_t*)imgp->out_ptr, imgp->cur_part_hdr.image_size);
