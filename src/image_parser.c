@@ -6,13 +6,13 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
+#include <utils.h>	/* For console output (also pulled in by net.h) */
 #include <img.h>
 #include <lz4.h>	/* For lz4_init/lz4_process_chunk*/
 #include <crypto.h>	/* For crypto_* */
 #include <stdlib.h>	/* For malloc/free */
 #include <errno.h>	/* For error codes */
 #include <string.h>	/* For memcpy/memset */
-#include <utils.h>	/* For console output */
 
 static ImgpState *imgp = NULL;
 

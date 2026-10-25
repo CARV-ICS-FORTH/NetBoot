@@ -8,8 +8,8 @@
  */
 
 /* Driver for Unit 0 (self) */
+#include <utils.h>	/* For console output (also pulled in by net.h) */
 #include <img.h>
-#include <utils.h>	/* For console output */
 #include <errno.h>	/* For error codes */
 
 #if !defined(HOST_TEST)

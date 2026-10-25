@@ -13,6 +13,9 @@
 #include <stdint.h>	/* For typed integers */
 #include <stdlib.h>	/* For rand() */
 #include <stddef.h>	/* For size_t */
+#ifdef NET_DEBUG
+#include <utils.h>	/* For ERR() in the NET_DEBUG alignment checks below */
+#endif
 
 /*
  * Note: we can't use any system headers, only standard C stuff
