@@ -105,17 +105,41 @@ dhcp_reply_validate(const uint8_t *buff, uint8_t expected_msg_type)
 		DBG("[DHCP] got a reply message with invalid hwaddr/len info !\n");
 		return -DHCP_ERR_INVALID_HWADDR;
 	}
-	if (net_get_u16_aligned(&in_msg->secs_elapsed)) {
-		DBG("[DHCP] got non-zero secs in reply message !\n");
-		return -DHCP_ERR_UNEXPECTED_SECS;
-	}
 	/*
-	 * The transaction ID must be preserved across the whole process, regardless of whether a relay
-	 * agent is present or not, the same applies to the flags field, which we always set to 0 to
-	 * indicate that the client can receive unicast frames.
+	 * RFC2131 Table 3 has the server zero 'secs' in its replies, so this began
+	 * life as a hard reject. In practice servers build the reply by editing the
+	 * request in place and echo the client's 'secs' straight back (dnsmasq never
+	 * touches the field; ISC DHCP 3.0 does the same) - see
+	 * draft-ietf-dhc-implementation sec. 4.22. 'secs' is informational and
+	 * carries no trust, so we deliberately do NOT reject on it. The original
+	 * check is kept here, disabled, so it does not get "fixed" back in - it
+	 * refuses otherwise-valid leases from mainstream servers:
+	 *
+	 *	if (net_get_u16_aligned(&in_msg->secs_elapsed)) {
+	 *		DBG("[DHCP] got non-zero secs in reply message !\n");
+	 *		return -DHCP_ERR_UNEXPECTED_SECS;
+	 *	}
 	 */
-	if (net_get_u16_aligned(&in_msg->flags) || (net_get_u32(&in_msg->xid) != last_out_msg->xid)) {
-		DBG("[DHCP] mismatch in flags/xid between our request and received reply !\n");
+
+	/*
+	 * The transaction ID must be preserved across the whole process, whether or
+	 * not a relay is present. It is our main defence against accepting a reply
+	 * that is not ours, so it stays a hard check.
+	 *
+	 * We also used to require flags == 0 (we always send 0, and RFC2131 Table 3
+	 * has the server echo the field back). That was too strict: a server
+	 * legitimately sets the broadcast bit in a DHCPNAK
+	 * (draft-ietf-dhc-implementation sec. 4.17), and the flags carry no trust.
+	 * So we validate the xid only. Do NOT re-add the flags half - it rejects
+	 * DHCPNAKs (and relayed replies). Original combined check, disabled:
+	 *
+	 *	if (net_get_u16_aligned(&in_msg->flags) || (net_get_u32(&in_msg->xid) != last_out_msg->xid)) {
+	 *		DBG("[DHCP] mismatch in flags/xid between our request and received reply !\n");
+	 *		return -DHCP_ERR_FLAGS_XID_MISMATCH;
+	 *	}
+	 */
+	if (net_get_u32(&in_msg->xid) != last_out_msg->xid) {
+		DBG("[DHCP] xid mismatch between our request and received reply !\n");
 		return -DHCP_ERR_FLAGS_XID_MISMATCH;
 	}
 	/*
@@ -248,12 +272,20 @@ dhcp_reply_validate(const uint8_t *buff, uint8_t expected_msg_type)
 			} else if (ret < 0)
 				return ret;
 
-			ret = dhcp_grab_option_offset(buff, DHCP_CLIENT_ID_OPTION);
-			if (ret > 0) {
-				DBG("[DHCP] got DHCPOFFER with client identifer !\n");
-				return -DHCP_ERR_OFFER_HAS_CLIENT_ID;
-			} else if (ret < 0)
-				return ret;
+			/*
+			 * RFC2131 forbids the client-identifier option in a DHCPOFFER, so
+			 * we rejected it. draft-ietf-dhc-implementation sec. 4.5.2 reverses
+			 * that: it recommends servers MAY echo the client-id back for the
+			 * client to verify, and some do. It is harmless, so we deliberately
+			 * do NOT reject on it. Original check disabled (do NOT re-add):
+			 *
+			 *	ret = dhcp_grab_option_offset(buff, DHCP_CLIENT_ID_OPTION);
+			 *	if (ret > 0) {
+			 *		DBG("[DHCP] got DHCPOFFER with client identifer !\n");
+			 *		return -DHCP_ERR_OFFER_HAS_CLIENT_ID;
+			 *	} else if (ret < 0)
+			 *		return ret;
+			 */
 			break;
 		case DHCPACK:
 			if (dhcpc->last_msg_type == DHCPREQUEST &&
@@ -283,12 +315,19 @@ dhcp_reply_validate(const uint8_t *buff, uint8_t expected_msg_type)
 			} else if (ret < 0)
 				return ret;
 
-			ret = dhcp_grab_option_offset(buff, DHCP_CLIENT_ID_OPTION);
-			if (ret > 0) {
-				DBG("[DHCP] got DHCPACK with client identifer !\n");
-				return -DHCP_ERR_ACK_HAS_CLIENT_ID;
-			} else if (ret < 0)
-				return ret;
+			/*
+			 * As with the DHCPOFFER above: RFC2131 forbids the client-identifier
+			 * option here too, but draft-ietf-dhc-implementation sec. 4.5.2 says
+			 * a server MAY echo it, so we do NOT reject on it. Original check
+			 * disabled (do NOT re-add):
+			 *
+			 *	ret = dhcp_grab_option_offset(buff, DHCP_CLIENT_ID_OPTION);
+			 *	if (ret > 0) {
+			 *		DBG("[DHCP] got DHCPACK with client identifer !\n");
+			 *		return -DHCP_ERR_ACK_HAS_CLIENT_ID;
+			 *	} else if (ret < 0)
+			 *		return ret;
+			 */
 			break;
 		case DHCPNAK:
 			if (in_client_ipaddr || in_offered_ipaddr || in_server_ipaddr) {
