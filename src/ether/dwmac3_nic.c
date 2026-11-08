@@ -39,16 +39,6 @@
 #error "dwmac3 needs PLAT_DWMAC3_CSR_CLOCK_HZ (the MAC CSR clock) for the MDC divider"
 #endif
 
-/* Normal (non-enhanced) descriptors carry a single 32-bit buffer address and
- * a 32-bit next pointer - this IP cannot DMA above 4GB. DMA buffers live in
- * our RAM, which must therefore sit in the DRAM window and below 4GB. */
-_Static_assert((uint64_t)PLAT_RAM_BASE + PLAT_RAM_SIZE <= 0x100000000ULL,
-	       "dwmac3 is 32-bit DMA only: RAM region sits above 4GB");
-#if (PLAT_RAM_BASE < PLAT_SYSRAM_BASE) || \
-    (PLAT_RAM_BASE + PLAT_RAM_SIZE > PLAT_SYSRAM_BASE + PLAT_SYSRAM_SIZE)
-#error "DMA buffers (in RAM) must lie within the DRAM/SYSRAM region"
-#endif
-
 /********************\
 * DWMAC Register Map *
 \********************/
@@ -162,9 +152,11 @@ enum {
  * our flush/invalidate on one object never clips another. 64 bytes is the
  * RISC-V RVA cache-block size and is also >= any dwmac descriptor alignment
  * requirement. The aligned attributes put each DMA object on its own 64-byte
- * boundary within the struct; the struct itself is 64-byte aligned because it
- * is the first malloc (the yalibc heap starts cache-line aligned), as the
- * other DMA NIC drivers rely on too. */
+ * boundary within the struct; the struct base is 64-byte aligned either
+ * because it sits at PLAT_DMA_BASE (cache-line aligned, checked in
+ * platform_checks.h) or, on the heap path, because it is the first malloc (the
+ * yalibc heap starts cache-line aligned), as the other DMA NIC drivers rely
+ * on too. */
 #define DWMAC3_DMA_ALIGN	64
 
 struct dwmac3_nic {
@@ -178,6 +170,21 @@ struct dwmac3_nic {
 	int rx_armed;	/* RX descriptor currently owned by the DMA engine */
 };
 typedef struct dwmac3_nic DwMac3Nic;
+
+/* dwmac-1000 normal descriptors hold 32-bit addresses, so our DMA state must
+ * live below 4GB (desc_addr32() would otherwise truncate). The generic sanity
+ * of the PLAT_DMA_BASE window (alignment, inside DRAM, clear of RAM) is done in
+ * the SDK's platform_checks.h; here we only enforce that our state fits the
+ * window and stays within this NIC's 32-bit addressing limit. */
+#ifdef PLAT_DMA_BASE
+_Static_assert(sizeof(struct dwmac3_nic) <= PLAT_DMA_SIZE,
+	       "dwmac3 state does not fit in PLAT_DMA_SIZE");
+_Static_assert((uint64_t)PLAT_DMA_BASE + PLAT_DMA_SIZE <= 0x100000000ULL,
+	       "dwmac3 is 32-bit DMA only: PLAT_DMA region sits above 4GB");
+#else
+_Static_assert((uint64_t)PLAT_RAM_BASE + PLAT_RAM_SIZE <= 0x100000000ULL,
+	       "dwmac3 is 32-bit DMA only: heap/RAM region sits above 4GB");
+#endif
 
 static DwMac3Nic *nic = NULL;
 
@@ -604,12 +611,19 @@ eth_open(void)
 		return -EBUSY;
 	}
 
-	/* First malloc in the netboot flow: the yalibc heap starts cache-line
-	 * aligned, so the aligned(64) DMA members land on real 64-byte
-	 * boundaries (same assumption as the other DMA NIC drivers). */
+#ifdef PLAT_DMA_BASE
+	/* DMA state lives at a fixed DRAM address for devices that can only DMA to
+	 * DRAM. The cast is an immediate, not a far symbol, so it is reachable
+	 * whatever the code model / however far RAM and ROM sit apart. */
+	nic = (DwMac3Nic *)(uintptr_t)PLAT_DMA_BASE;
+#else
+	/* Heap path: the RAM region is DMA-reachable here. This is the first malloc
+	 * in the netboot flow, so it lands on the cache-line-aligned heap start and
+	 * the aligned(64) members fall on real 64-byte boundaries. */
 	nic = malloc(sizeof(DwMac3Nic));
 	if (!nic)
 		return -ENOMEM;
+#endif
 	memset(nic, 0, sizeof(DwMac3Nic));
 
 	/* No eFuse MAC on this part; use a random locally-administered one. */
@@ -634,7 +648,9 @@ eth_open(void)
 	return 0;
 
  fail:
+#ifndef PLAT_DMA_BASE
 	free(nic);
+#endif
 	nic = NULL;
 	return -ENODEV;
 }
@@ -650,7 +666,9 @@ eth_close(void)
 			    ~(MAC_CONF_RXENABLE | MAC_CONF_TXENABLE));
 	mac_write(DMA_OPMODE, mac_read(DMA_OPMODE) &
 			    ~(DMA_OPMODE_RXSTART | DMA_OPMODE_TXSTART));
+#ifndef PLAT_DMA_BASE
 	free(nic);
+#endif
 	nic = NULL;
 }
 

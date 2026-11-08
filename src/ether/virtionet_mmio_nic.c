@@ -390,6 +390,14 @@ struct virtio_net_nic {
 
 typedef struct virtio_net_nic VirtioNetNic;
 
+/* When the platform pins DMA memory at a fixed window, our state must fit it.
+ * (virtqueue descriptors carry 64-bit addresses, so there is no 4GB limit.)
+ * Generic PLAT_DMA_BASE placement sanity lives in the SDK's platform_checks.h. */
+#ifdef PLAT_DMA_BASE
+_Static_assert(sizeof(struct virtio_net_nic) <= PLAT_DMA_SIZE,
+	       "VirtioNet state does not fit in PLAT_DMA_SIZE");
+#endif
+
 /* Global NIC instance */
 static VirtioNetNic *vnic = NULL;
 
@@ -406,12 +414,17 @@ virtio_net_init(void)
 
 	int ret;
 
-	/* Single malloc for entire NIC state */
+	/* The whole NIC state (virtqueues + buffers) is DMA-visible, so place it at
+	 * the platform's fixed DMA window when it has one, otherwise on the heap. */
+#ifdef PLAT_DMA_BASE
+	vnic = (VirtioNetNic *)(uintptr_t)PLAT_DMA_BASE;
+#else
 	vnic = malloc(sizeof(VirtioNetNic));
 	if (!vnic) {
 		ERR("[VirtioNet] Failed to allocate NIC state\n");
 		return -ENOMEM;
 	}
+#endif
 	memset(vnic, 0, sizeof(VirtioNetNic));
 
 	/* Initialize device */
@@ -457,7 +470,9 @@ virtio_net_init(void)
 err_reset:
 	virtio_mmio_reset_device();
 err_free:
+#ifndef PLAT_DMA_BASE
 	free(vnic);
+#endif
 	vnic = NULL;
 	return ret;
 }
@@ -479,7 +494,9 @@ eth_close(void)
 		return;
 
 	virtio_mmio_reset_device();
+#ifndef PLAT_DMA_BASE
 	free(vnic);
+#endif
 	vnic = NULL;
 	DBG_NET("[VirtioNet] Device closed\n");
 }

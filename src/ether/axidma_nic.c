@@ -138,6 +138,14 @@ struct axidma_nic {
 };
 typedef struct axidma_nic AxiDmaNic;
 
+/* When the platform pins DMA memory at a fixed window, our state must fit it.
+ * (The BDs carry 64-bit addresses, so there is no 4GB limit.) Generic
+ * PLAT_DMA_BASE placement sanity lives in the SDK's platform_checks.h. */
+#ifdef PLAT_DMA_BASE
+_Static_assert(sizeof(struct axidma_nic) <= PLAT_DMA_SIZE,
+	       "AxiDMA state does not fit in PLAT_DMA_SIZE");
+#endif
+
 /* Global driver state - only one NIC instance in bare metal */
 static AxiDmaNic *nic_state = NULL;
 
@@ -396,12 +404,17 @@ eth_open(void)
 		return -EBUSY;
 	}
 
-	/* Allocate driver state
-	 * malloc returns pointer-size-aligned address. Our structure has
-	 * alignment attributes on the BDs to ensure 64-byte alignment. */
+	/* Driver state must be DMA-reachable and 64-byte aligned (the BDs need
+	 * AXIDMA_BD_MINIMUM_ALIGNMENT). Use the platform's fixed DMA window when it
+	 * has one; otherwise take it off the heap - the first malloc in the netboot
+	 * flow, so it lands on the cache-line-aligned heap start. */
+#ifdef PLAT_DMA_BASE
+	nic_state = (AxiDmaNic *)(uintptr_t)PLAT_DMA_BASE;
+#else
 	nic_state = malloc(sizeof(struct axidma_nic));
 	if (!nic_state)
 		return -ENOMEM;
+#endif
 	memset(nic_state, 0, sizeof(struct axidma_nic));
 
 	/* Generate a random MAC address */
@@ -421,23 +434,25 @@ eth_open(void)
 	return 0;
 
 cleanup:
-	if (nic_state) {
-		free(nic_state);
-		nic_state = NULL;
-	}
+#ifndef PLAT_DMA_BASE
+	free(nic_state);
+#endif
+	nic_state = NULL;
 	return ret;
 }
 
 void
 eth_close(void)
 {
-	if (nic_state) {
-		/* Flush/complete any pending commands/transfers
-		 * before freeing buffers */
-		axidma_reset();		
-		free(nic_state);
-		nic_state = NULL;
-	}
+	if (!nic_state)
+		return;
+
+	/* Flush/complete any pending commands/transfers before releasing state */
+	axidma_reset();
+#ifndef PLAT_DMA_BASE
+	free(nic_state);
+#endif
+	nic_state = NULL;
 }
 
 #endif /* defined(PLAT_AXIDMA_BASE_ADDR) && (PLAT_AXIDMA_BASE_ADDR > 0) */
