@@ -154,6 +154,57 @@ net_set_broadcast_filter(int on)
 	net->broadcast_filter = on;
 }
 
+/* Answer an ARP request that targets our own IP. Returns 1 if we consumed the
+ * frame (it was such a request and we sent a reply), 0 otherwise so the caller
+ * keeps processing it (e.g. an ARP reply we're waiting for). Peers age their
+ * neighbor cache on a timer regardless of the traffic we send them, so if we
+ * never answer their "who has <us>?" probe mid-transfer they mark us
+ * unreachable and can no longer deliver to us. */
+static int
+net_arp_respond(const uint8_t *inbuff, ssize_t frm_len)
+{
+	/* Need the full eth + ARP headers before we can inspect the request */
+	if (frm_len < (ssize_t)(sizeof(struct eth_hdr) + sizeof(struct arp_ipv4oeth)))
+		return 0;
+
+	const struct arp_frame *req = (const struct arp_frame *)inbuff;
+
+	/* Only answer IPv4-over-Ethernet requests aimed at our own IP */
+	if (ntohs(net_get_u16_aligned(&req->arp_hdr.oper)) != ARP_REQUEST)
+		return 0;
+	if (net_get_u32(req->arp_hdr.dst_paddr) != net->ipaddr)
+		return 0;
+
+	uint8_t *outbuff = eth_get_tx_buff(sizeof(struct arp_frame));
+	if (!outbuff)
+		return 0;
+	struct arp_frame *rep = (struct arp_frame *)outbuff;
+
+	mac_addr_t *smac = eth_get_mac_addr();
+	mac_addr_t req_mac = {0};
+	mac_set_bytes(&req_mac, req->arp_hdr.src_haddr);
+
+	/* Ethernet header: from us, back to the requester */
+	mac_copy_bytes(rep->eth_hdr.src_mac, smac);
+	mac_copy_bytes_aligned(rep->eth_hdr.dst_mac, &req_mac);
+	rep->eth_hdr.ethertype = htons(ETHERTYPE_ARP);
+
+	/* ARP reply body: our mapping as sender, the requester as target */
+	rep->arp_hdr.htype = htons(ARP_HTYPE_ETHER);
+	rep->arp_hdr.ptype = htons(ARP_PTYPE_IPV4);
+	rep->arp_hdr.hlen = ETH_ADDR_LEN;
+	rep->arp_hdr.plen = sizeof(uint32_t);
+	rep->arp_hdr.oper = htons(ARP_REPLY);
+	mac_copy_bytes(rep->arp_hdr.src_haddr, smac);
+	net_set_u32_aligned(net->ipaddr, rep->arp_hdr.src_paddr);
+	mac_copy_bytes_aligned(rep->arp_hdr.dst_haddr, &req_mac);
+	net_set_u32(net_get_u32(req->arp_hdr.src_paddr), rep->arp_hdr.dst_paddr);
+
+	net_frame_dump("TX", outbuff, sizeof(struct arp_frame));
+	eth_trigger_tx(sizeof(struct arp_frame));
+	return 1;
+}
+
 /* Poll NIC for a frame with the expected ethertype provided. Timeout after
  * RX_NET_POLLS nic timeouts (e.g. on a silent network without frames), or
  * after RX_NET_TIMEOUT_IDLE_MSEC. */
@@ -189,6 +240,16 @@ net_recv_raw(uint16_t expected_ethertype, ssize_t *frm_len)
 			countdown--;
 			continue;
 		}
+
+		/* Transparently answer ARP requests for our own IP once we have
+		 * one, so the peer keeps a valid neighbor entry for us while we
+		 * sit here waiting for IPv4 traffic. These are broadcast, so
+		 * handle them before the unicast/broadcast filter below, and
+		 * don't spend a retry on them. */
+		if (net->ipaddr &&
+		    ntohs(net_get_u16_aligned(&inbuff[12])) == ETHERTYPE_ARP &&
+		    net_arp_respond(inbuff, *frm_len))
+			continue;
 
 		/* Drop any frames not directed to us in case hw doesn't
 		 * filter stuff or is in promisc mode by default. */

@@ -386,8 +386,13 @@ tftp_request_file(const char* req_filename, tftp_output_handler_fn output_cb, vo
 			break;
 		case TFTP_DATA:
 			/* Data packet - contains file data
-			 * Format: opcode(2) | block#(2) | data(0-blocksize bytes) */
-			if (payload_size <= 4) {
+			 * Format: opcode(2) | block#(2) | data(0-blocksize bytes)
+			 * A zero-data packet (payload_size == 4) is legal: it's the
+			 * EOF marker the server sends when the file size is an exact
+			 * multiple of the block size, so the last "real" block was a
+			 * full block and couldn't itself signal the end. Only reject
+			 * packets too short to even hold the TFTP header. */
+			if (payload_size < 4) {
 				cmd = tftp_make_error(TFTP_ERROR_ILLEGAL_OP, &cmd_len);
 				done = -EBADMSG;
 				break;
